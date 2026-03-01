@@ -1,4 +1,4 @@
-name: Build KernelSU Next for Bramble
+name: Build KernelSU Next for Pixel 4a 5G (GSI1)
 
 on:
   workflow_dispatch:
@@ -6,85 +6,69 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Setup dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev libncurses-dev git-core wget
+          sudo apt-get install -y \
+            git curl bc bison build-essential flex \
+            libssl-dev libncurses5-dev lzop ccache
 
-      - name: Set up Toolchains
+      - name: Read build config
         run: |
-          mkdir -p $GITHUB_WORKSPACE/toolchain
-          cd $GITHUB_WORKSPACE/toolchain
-          
-          # Clang
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
-          mkdir clang && tar -xf clang-r487747c.tar.gz -C clang
-          
-          # GCC 64
-          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz -O gcc64.tar.gz
-          mkdir gcc64 && tar -xf gcc64.tar.gz -C gcc64
-          
-          # GCC 32
-          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz -O gcc32.tar.gz
-          mkdir gcc32 && tar -xf gcc32.tar.gz -C gcc32
-          
-          rm *.tar.gz
+          CONFIG_ENV=config.properties
+          echo "KERNEL_SOURCE=$(grep -w 'KERNEL_SOURCE' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE_BRANCH=$(grep -w 'KERNEL_SOURCE_BRANCH' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "KERNEL_CONFIG=$(grep -w 'KERNEL_CONFIG' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "ARCH=$(grep -w 'ARCH' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "THREAD=$(grep -w 'THREAD' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "KERNEL_IMAGE=$(grep -w 'KERNEL_IMAGE' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "ENABLE_KERNELSU=$(grep -w 'ENABLE_KERNELSU' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "KERNELSU_INSTALLER=$(grep -w 'KERNELSU_INSTALLER' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "KERNELSU_TAG=$(grep -w 'KERNELSU_TAG' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "BUILD_KERNELSU_BOOT_IMG=$(grep -w 'BUILD_KERNELSU_BOOT_IMG' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+          echo "KERNELSU_SOURCE_BOOT_IMAGE=$(grep -w 'KERNELSU_SOURCE_BOOT_IMAGE' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
 
-      - name: Fetch Kernel Source
+      - name: Clone kernel source
         run: |
-          # --single-branch と --no-tags を追加して極限まで軽量化
-          git clone --depth=1 https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-21 --single-branch --no-tags kernel-src
+          git clone --depth=1 -b "$KERNEL_SOURCE_BRANCH" "$KERNEL_SOURCE" kernel
+          cd kernel
+          ls
 
-      - name: Setup KernelSU Next
+      - name: Apply KernelSU Next
+        if: env.ENABLE_KERNELSU == 'true'
         run: |
-          cd kernel-src
-          # 指標となるソースがあるか確認してから実行
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+          cd kernel
+          curl -LSs "$KERNELSU_INSTALLER" | bash -s "$KERNELSU_TAG"
+          # 必要ならここで KernelSU Next 用の追加パッチを適用
 
-      - name: Build Kernel
+      - name: Build kernel
         run: |
-          cd kernel-src
-          
-          TC_DIR=$GITHUB_WORKSPACE/toolchain
-          export PATH=$TC_DIR/clang/bin:$TC_DIR/gcc64/bin:$TC_DIR/gcc32/bin:$PATH
-          
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
-          
-          # 出力先を絶対パスで指定
-          OUT_DIR=$GITHUB_WORKSPACE/out
-          mkdir -p $OUT_DIR
-          
-          # Bramble用のDefconfig (LineageOS 21では b3_11_defconfig か vendor/redbull_defconfig)
-          # エラー回避のため、ファイルが存在するか確認して実行
-          if [ -f arch/arm64/configs/vendor/redbull_defconfig ]; then
-            CONF=vendor/redbull_defconfig
-          else
-            CONF=b3_11_defconfig
-          fi
-          
-          make O=$OUT_DIR $CONF
-          
-          make -j$(nproc) O=$OUT_DIR \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip
+          cd kernel
+          export ARCH=$ARCH
+          export SUBARCH=$ARCH
+          export PATH="$PWD/clang/bin:$PATH"
+          # 実際のツールチェーンに合わせて CROSS_COMPILE 等を設定
+          make "$KERNEL_CONFIG"
+          make -j"$THREAD"
 
-      - name: Upload Artifact
+      - name: Build boot image (GSI1)
+        if: env.BUILD_KERNELSU_BOOT_IMG == 'true'
+        run: |
+          cd kernel
+          mkdir -p out_img
+          cp "$KERNEL_IMAGE" out_img/Image.gz
+          # ここで GSI1 用 boot.img を再パック
+          # 例: mkbootimg / AOSP の mkbootimg.py を利用
+          # python mkbootimg.py --kernel out_img/Image.gz --ramdisk ramdisk-gsi1.img ... -o out_img/boot-gsi1-kernelsu.img
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Next-Bramble
+          name: bramble-kernelsu-next-gsi1
           path: |
-            out/arch/arm64/boot/Image.lz4
-            out/arch/arm64/boot/dtbo.img
+            kernel/out_img/*
