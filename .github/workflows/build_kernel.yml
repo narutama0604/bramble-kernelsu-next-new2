@@ -1,4 +1,4 @@
-name: Build KernelSU Next for Bramble (Pixel 4a 5G)
+name: Build KernelSU Next for Bramble
 
 on:
   workflow_dispatch:
@@ -13,68 +13,65 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # libncurses5 を削除し、汎用的な libncurses-dev に変更
-          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev libncurses-dev git-core
+          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev libncurses-dev git-core wget
 
       - name: Set up Toolchains
         run: |
           mkdir -p $GITHUB_WORKSPACE/toolchain
           cd $GITHUB_WORKSPACE/toolchain
           
-          # 1. Clang (r487747c)
-          echo "Downloading Clang..."
+          # Clang
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
-          mkdir clang
-          tar -xf clang-r487747c.tar.gz -C clang
+          mkdir clang && tar -xf clang-r487747c.tar.gz -C clang
           
-          # 2. GCC 64-bit (aarch64)
-          echo "Downloading GCC 64..."
+          # GCC 64
           wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz -O gcc64.tar.gz
-          mkdir gcc64
-          tar -xf gcc64.tar.gz -C gcc64
+          mkdir gcc64 && tar -xf gcc64.tar.gz -C gcc64
           
-          # 3. GCC 32-bit (arm)
-          echo "Downloading GCC 32..."
+          # GCC 32
           wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz -O gcc32.tar.gz
-          mkdir gcc32
-          tar -xf gcc32.tar.gz -C gcc32
+          mkdir gcc32 && tar -xf gcc32.tar.gz -C gcc32
           
           rm *.tar.gz
 
       - name: Fetch Kernel Source
         run: |
-          # depth=1 で履歴を捨てて高速化
-          git clone --depth=1 https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-21 kernel-src
+          # --single-branch と --no-tags を追加して極限まで軽量化
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-21 --single-branch --no-tags kernel-src
 
       - name: Setup KernelSU Next
         run: |
           cd kernel-src
-          # KernelSU Next の公式スクリプトを適用
+          # 指標となるソースがあるか確認してから実行
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
 
       - name: Build Kernel
         run: |
           cd kernel-src
           
-          # ツールチェーンのパス通し
           TC_DIR=$GITHUB_WORKSPACE/toolchain
           export PATH=$TC_DIR/clang/bin:$TC_DIR/gcc64/bin:$TC_DIR/gcc32/bin:$PATH
           
-          # 環境変数の設定
           export ARCH=arm64
           export SUBARCH=arm64
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
           
-          # ビルド先ディレクトリ
+          # 出力先を絶対パスで指定
           OUT_DIR=$GITHUB_WORKSPACE/out
           mkdir -p $OUT_DIR
           
-          # Defconfigの作成 (redbull は Pixel 4a 5G / 5 の共通名)
-          make O=$OUT_DIR vendor/redbull_defconfig
+          # Bramble用のDefconfig (LineageOS 21では b3_11_defconfig か vendor/redbull_defconfig)
+          # エラー回避のため、ファイルが存在するか確認して実行
+          if [ -f arch/arm64/configs/vendor/redbull_defconfig ]; then
+            CONF=vendor/redbull_defconfig
+          else
+            CONF=b3_11_defconfig
+          fi
           
-          # ビルド実行 (Image.lz4, dtbo.img 等を生成)
+          make O=$OUT_DIR $CONF
+          
           make -j$(nproc) O=$OUT_DIR \
             CC=clang \
             LD=ld.lld \
@@ -84,19 +81,10 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip
 
-      - name: Organize Artifacts
-        run: |
-          # 配布用にファイルをまとめる
-          mkdir -p deploy
-          # カーネル本体
-          cp out/arch/arm64/boot/Image.lz4 deploy/
-          # GSIで必要になる場合があるDTB/DTBO
-          if [ -f out/arch/arm64/boot/dtbo.img ]; then cp out/arch/arm64/boot/dtbo.img deploy/; fi
-          # バージョン確認用
-          cp out/.config deploy/build_config.txt
-
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: KernelSU-Next-Bramble
-          path: deploy/*
+          path: |
+            out/arch/arm64/boot/Image.lz4
+            out/arch/arm64/boot/dtbo.img
