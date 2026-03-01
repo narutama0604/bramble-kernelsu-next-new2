@@ -1,110 +1,38 @@
-name: Build KernelSU Next for Pixel 4a 5G (GSI1)
-
+name: Build KernelSU Next for Pixel 4a 5G
 on:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git curl bc bison build-essential flex \
-            libssl-dev libncurses5-dev lzop ccache
-
-      # config.properties を安全に読む版
-      - name: Read build config
-        run: |
-          CONFIG_ENV=config.properties
-
-          if [ ! -f "$CONFIG_ENV" ]; then
-            echo "config.properties が見つかりません" >&2
-            exit 1
-          fi
-
-          # key=value 形式だけ処理、コメントと空行はスキップ
-          while IFS='=' read -r key value; do
-            # 前後の空白を削る
-            key="$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-            value="$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-            # 空行とコメントをスキップ
-            [ -z "$key" ] && continue
-            case "$key" in \#*) continue ;; esac
-
-            case "$key" in
-              KERNEL_SOURCE|KERNEL_SOURCE_BRANCH|KERNEL_CONFIG|ARCH|THREAD|KERNEL_IMAGE|ENABLE_KERNELSU|KERNELSU_INSTALLER|KERNELSU_TAG|BUILD_KERNELSU_BOOT_IMG|KERNELSU_SOURCE_BOOT_IMAGE)
-                echo "${key}=${value}" >> "$GITHUB_ENV"
-                ;;
-            esac
-          done < "$CONFIG_ENV"
-
-      - name: Debug env vars
-        run: |
-          echo "KERNEL_SOURCE=$KERNEL_SOURCE"
-          echo "KERNEL_SOURCE_BRANCH=$KERNEL_SOURCE_BRANCH"
-          echo "KERNEL_CONFIG=$KERNEL_CONFIG"
-          echo "ARCH=$ARCH"
-          echo "THREAD=$THREAD"
-          echo "KERNEL_IMAGE=$KERNEL_IMAGE"
-          echo "ENABLE_KERNELSU=$ENABLE_KERNELSU"
-          echo "KERNELSU_INSTALLER=$KERNELSU_INSTALLER"
-          echo "KERNELSU_TAG=$KERNELSU_TAG"
-          echo "BUILD_KERNELSU_BOOT_IMG=$BUILD_KERNELSU_BOOT_IMG"
-          echo "KERNELSU_SOURCE_BOOT_IMAGE=$KERNELSU_SOURCE_BOOT_IMAGE"
-
-          # 必須項目が空ならここで止める
-          for v in KERNEL_SOURCE KERNEL_SOURCE_BRANCH KERNEL_CONFIG ARCH THREAD KERNEL_IMAGE; do
-            if [ -z "${!v}" ]; then
-              echo "必須設定 $v が空です。config.properties を確認してください。" >&2
-              exit 1
-            fi
-          done
-
-      - name: Clone kernel source
-        run: |
-          git clone --depth=1 -b "$KERNEL_SOURCE_BRANCH" "$KERNEL_SOURCE" kernel
-          cd kernel
-          ls
-
-      - name: Apply KernelSU Next
-        if: env.ENABLE_KERNELSU == 'true'
-        run: |
-          cd kernel
-          curl -LSs "$KERNELSU_INSTALLER" | bash -s "$KERNELSU_TAG"
-
-      - name: Build kernel
-        run: |
-          cd kernel
-          export ARCH="$ARCH"
-          export SUBARCH="$ARCH"
-          # 実際の toolchain に合わせて PATH / CROSS_COMPILE を調整すること
-          make "$KERNEL_CONFIG"
-          make -j"$THREAD"
-
-      - name: Build boot image (GSI1)
-        if: env.BUILD_KERNELSU_BOOT_IMG == 'true'
-        run: |
-          cd kernel
-          mkdir -p out_img
-          cp "$KERNEL_IMAGE" out_img/Image.gz
-          # ここで GSI1 用の boot.img を再パックする
-          # mkbootimg を入手して、実際のパラメータで置き換えてください
-          # 例:
-          # python mkbootimg.py \
-          #   --kernel out_img/Image.gz \
-          #   --ramdisk ../ramdisk-gsi1.img \
-          #   --base 0x00000000 --pagesize 4096 ... \
-          #   -o out_img/boot-gsi1-kernelsu.img
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Build Kernel
+        uses: dabao1955/kernel_build_action@main
         with:
-          name: bramble-kernelsu-next-gsi1
-          path: kernel/out_img/*
+          # LineageOS 23.2 の Pixel 4a 5G (bramble) / 5 (redfin) 用カーネルソース
+          kernel-url: https://github.com/LineageOS/android_kernel_google_redbull
+          kernel-branch: lineage-23.2
+          
+          # defconfigの名前（gsi1用に指定のものがあればここを変更する）
+          config: redbull_defconfig
+          arch: arm64
+          
+          # コンパイラの設定
+          # 4.19カーネルなのでAndroid 12環境などの古いClangが必要な場合がある
+          aosp-gcc: true
+          aosp-clang: true
+          android-version: 12
+          aosp-clang-version: r383902
+          
+          # KernelSU Next の組み込みを有効化
+          ksu: true
+          ksu-version: next
+          
+          # LTOが原因でビルドエラーになる場合はtrueにする
+          disable-lto: false
+          
+          # AnyKernel3 形式のzipで出力する
+          anykernel3: true
