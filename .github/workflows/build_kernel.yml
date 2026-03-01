@@ -1,0 +1,53 @@
+name: Build KernelSU Next for Bramble
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm
+
+      - name: Set up Toolchain (Clang)
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/toolchain
+          cd $GITHUB_WORKSPACE/toolchain
+          # GoogleのプレビルトClang等を使用（必要に応じてバージョン調整）
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1
+
+      - name: Fetch Kernel Source
+        run: |
+          # LineageOSのソースを取得（bramble用）
+          git clone https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-21 kernel-src
+          cd kernel-src
+
+      - name: Setup KernelSU Next
+        run: |
+          cd kernel-src
+          # KernelSU Nextのインストールスクリプト実行
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+
+      - name: Build Kernel
+        run: |
+          cd kernel-src
+          export PATH=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r487747c/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out b3_11_defconfig # Pixel 4a 5G/5共通のdefconfig
+          make -j$(nproc) O=out \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-bramble-ksun
+          path: kernel-src/out/arch/arm64/boot/Image.lz4
