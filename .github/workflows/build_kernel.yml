@@ -1,4 +1,5 @@
-name: Build KernelSU Next for Bramble
+name: Build KernelSU Next for Bramble (Pixel 4a 5G)
+
 on:
   workflow_dispatch:
 
@@ -12,42 +13,75 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm
+          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev libncurses-dev libncurses5
 
-      - name: Set up Toolchain (Clang)
+      - name: Set up Toolchains
         run: |
           mkdir -p $GITHUB_WORKSPACE/toolchain
           cd $GITHUB_WORKSPACE/toolchain
-          # GoogleのプレビルトClang等を使用（必要に応じてバージョン調整）
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 --depth=1
+          
+          # 1. Clang (r487747c) - Android 14/LineageOS 21向け
+          echo "Downloading Clang..."
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
+          mkdir clang
+          tar -xf clang-r487747c.tar.gz -C clang
+          
+          # 2. GCC 64-bit (aarch64)
+          echo "Downloading GCC 64..."
+          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz -O gcc64.tar.gz
+          mkdir gcc64
+          tar -xf gcc64.tar.gz -C gcc64
+          
+          # 3. GCC 32-bit (arm)
+          echo "Downloading GCC 32..."
+          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz -O gcc32.tar.gz
+          mkdir gcc32
+          tar -xf gcc32.tar.gz -C gcc32
+          
+          rm *.tar.gz
 
       - name: Fetch Kernel Source
         run: |
-          # LineageOSのソースを取得（bramble用）
-          git clone https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-23.2 kernel-src
-          cd kernel-src
+          # bramble (redbull) 用の LineageOS 21 ソースを取得
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-21 kernel-src
 
       - name: Setup KernelSU Next
         run: |
           cd kernel-src
-          # KernelSU Nextのインストールスクリプト実行
+          # KernelSU Next インストールスクリプトの実行
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
 
       - name: Build Kernel
         run: |
           cd kernel-src
-          export PATH=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r487747c/bin:$PATH
+          
+          # パスの設定
+          TC_DIR=$GITHUB_WORKSPACE/toolchain
+          export PATH=$TC_DIR/clang/bin:$TC_DIR/gcc64/bin:$TC_DIR/gcc32/bin:$PATH
+          
+          # ビルド変数の設定
           export ARCH=arm64
           export SUBARCH=arm64
-          make O=out b3_11_defconfig # Pixel 4a 5G/5共通のdefconfig
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          
+          # LineageOS 21 の redbull 系 defconfig
+          # ソースによって 'redbull_defconfig' か 'b3_11_defconfig' か異なる場合があります
+          make O=out vendor/redbull_defconfig
+          
+          # ビルド実行
           make -j$(nproc) O=out \
             CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-bramble-ksun
+          name: Image-lz4-KernelSU-Next
           path: kernel-src/out/arch/arm64/boot/Image.lz4
