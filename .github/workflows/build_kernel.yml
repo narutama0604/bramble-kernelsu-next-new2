@@ -24,7 +24,7 @@ jobs:
       - name: Fetch Kernel Source
         run: |
           # LineageOSのソースを取得（bramble用）
-          git clone https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-21 kernel-src
+          git clone https://github.com/LineageOS/android_kernel_google_redbull.git -b lineage-23.2 kernel-src
           cd kernel-src
 
       - name: Setup KernelSU Next
