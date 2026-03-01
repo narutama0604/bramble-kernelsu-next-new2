@@ -18,20 +18,54 @@ jobs:
             git curl bc bison build-essential flex \
             libssl-dev libncurses5-dev lzop ccache
 
+      # config.properties を安全に読む版
       - name: Read build config
         run: |
           CONFIG_ENV=config.properties
-          echo "KERNEL_SOURCE=$(grep -w 'KERNEL_SOURCE' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "KERNEL_SOURCE_BRANCH=$(grep -w 'KERNEL_SOURCE_BRANCH' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "KERNEL_CONFIG=$(grep -w 'KERNEL_CONFIG' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "ARCH=$(grep -w 'ARCH' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "THREAD=$(grep -w 'THREAD' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "KERNEL_IMAGE=$(grep -w 'KERNEL_IMAGE' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "ENABLE_KERNELSU=$(grep -w 'ENABLE_KERNELSU' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "KERNELSU_INSTALLER=$(grep -w 'KERNELSU_INSTALLER' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "KERNELSU_TAG=$(grep -w 'KERNELSU_TAG' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "BUILD_KERNELSU_BOOT_IMG=$(grep -w 'BUILD_KERNELSU_BOOT_IMG' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
-          echo "KERNELSU_SOURCE_BOOT_IMAGE=$(grep -w 'KERNELSU_SOURCE_BOOT_IMAGE' $CONFIG_ENV | head -n1 | cut -d'=' -f2-)" >> $GITHUB_ENV
+
+          if [ ! -f "$CONFIG_ENV" ]; then
+            echo "config.properties が見つかりません" >&2
+            exit 1
+          fi
+
+          # key=value 形式だけ処理、コメントと空行はスキップ
+          while IFS='=' read -r key value; do
+            # 前後の空白を削る
+            key="$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            value="$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+            # 空行とコメントをスキップ
+            [ -z "$key" ] && continue
+            case "$key" in \#*) continue ;; esac
+
+            case "$key" in
+              KERNEL_SOURCE|KERNEL_SOURCE_BRANCH|KERNEL_CONFIG|ARCH|THREAD|KERNEL_IMAGE|ENABLE_KERNELSU|KERNELSU_INSTALLER|KERNELSU_TAG|BUILD_KERNELSU_BOOT_IMG|KERNELSU_SOURCE_BOOT_IMAGE)
+                echo "${key}=${value}" >> "$GITHUB_ENV"
+                ;;
+            esac
+          done < "$CONFIG_ENV"
+
+      - name: Debug env vars
+        run: |
+          echo "KERNEL_SOURCE=$KERNEL_SOURCE"
+          echo "KERNEL_SOURCE_BRANCH=$KERNEL_SOURCE_BRANCH"
+          echo "KERNEL_CONFIG=$KERNEL_CONFIG"
+          echo "ARCH=$ARCH"
+          echo "THREAD=$THREAD"
+          echo "KERNEL_IMAGE=$KERNEL_IMAGE"
+          echo "ENABLE_KERNELSU=$ENABLE_KERNELSU"
+          echo "KERNELSU_INSTALLER=$KERNELSU_INSTALLER"
+          echo "KERNELSU_TAG=$KERNELSU_TAG"
+          echo "BUILD_KERNELSU_BOOT_IMG=$BUILD_KERNELSU_BOOT_IMG"
+          echo "KERNELSU_SOURCE_BOOT_IMAGE=$KERNELSU_SOURCE_BOOT_IMAGE"
+
+          # 必須項目が空ならここで止める
+          for v in KERNEL_SOURCE KERNEL_SOURCE_BRANCH KERNEL_CONFIG ARCH THREAD KERNEL_IMAGE; do
+            if [ -z "${!v}" ]; then
+              echo "必須設定 $v が空です。config.properties を確認してください。" >&2
+              exit 1
+            fi
+          done
 
       - name: Clone kernel source
         run: |
@@ -44,15 +78,13 @@ jobs:
         run: |
           cd kernel
           curl -LSs "$KERNELSU_INSTALLER" | bash -s "$KERNELSU_TAG"
-          # 必要ならここで KernelSU Next 用の追加パッチを適用
 
       - name: Build kernel
         run: |
           cd kernel
-          export ARCH=$ARCH
-          export SUBARCH=$ARCH
-          export PATH="$PWD/clang/bin:$PATH"
-          # 実際のツールチェーンに合わせて CROSS_COMPILE 等を設定
+          export ARCH="$ARCH"
+          export SUBARCH="$ARCH"
+          # 実際の toolchain に合わせて PATH / CROSS_COMPILE を調整すること
           make "$KERNEL_CONFIG"
           make -j"$THREAD"
 
@@ -62,13 +94,17 @@ jobs:
           cd kernel
           mkdir -p out_img
           cp "$KERNEL_IMAGE" out_img/Image.gz
-          # ここで GSI1 用 boot.img を再パック
-          # 例: mkbootimg / AOSP の mkbootimg.py を利用
-          # python mkbootimg.py --kernel out_img/Image.gz --ramdisk ramdisk-gsi1.img ... -o out_img/boot-gsi1-kernelsu.img
+          # ここで GSI1 用の boot.img を再パックする
+          # mkbootimg を入手して、実際のパラメータで置き換えてください
+          # 例:
+          # python mkbootimg.py \
+          #   --kernel out_img/Image.gz \
+          #   --ramdisk ../ramdisk-gsi1.img \
+          #   --base 0x00000000 --pagesize 4096 ... \
+          #   -o out_img/boot-gsi1-kernelsu.img
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: bramble-kernelsu-next-gsi1
-          path: |
-            kernel/out_img/*
+          path: kernel/out_img/*
